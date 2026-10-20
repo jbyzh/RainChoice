@@ -24,7 +24,29 @@ Windows 桌面工具，用于提醒雨课堂新选择题、生成 AI 建议，�
 
 ## 使用
 
-Windows 可执行程序见 [Releases](https://github.com/jbyzh/RainChoice/releases)。解压到可写目录，运行 `RainChoice.exe`，点击“试运行演示”。
+### 下载后怎么打开（Windows）
+
+1. 打开 [最新版下载页面](https://github.com/jbyzh/RainChoice/releases/latest)，在页面下方的 **Assets（附件）** 中下载 `RainChoice-v0.3-Windows.zip`。也可以[直接下载 v0.3 Windows 压缩包](https://github.com/jbyzh/RainChoice/releases/download/v0.3.0/RainChoice-v0.3-Windows.zip)。
+2. 下载完成后，在浏览器的下载记录中点击 **“在文件夹中显示”**，找到这个 `.zip` 文件。通常保存在电脑的 **“下载”** 文件夹；以浏览器实际保存位置为准。
+3. 右键压缩包，选择 **“全部解压缩”**，解压到自己方便找到、可以写入的文件夹，例如 D 盘的软件目录。**先完整解压，再运行程序。**
+4. 打开解压后的文件夹，再进入里面的 **`RainChoice` 文件夹**，双击 **`RainChoice.exe`**。如果 Windows 隐藏了扩展名，可能只显示 `RainChoice`，文件类型是 **“应用程序”**。
+5. 软件打开后，可以先点击 **“试运行演示”**，不需要登录或 API Key。正式使用时，选择平台 → 填写课程编号或链接 → 微信扫码登录 → 按需填写 AI 配置 → 选择运行方式 → 点击 **“开始监看”**。
+
+解压后的文件位置大致如下：
+
+```text
+你选择的解压文件夹/
+└─ RainChoice/
+   ├─ RainChoice.exe     ← 双击这个打开软件
+   ├─ 使用说明.md
+   └─ 其他源码、说明和许可文件
+```
+
+**这是免安装的 Windows 程序，不需要另外安装 Python。** 下次使用仍然打开这个文件夹里的 `RainChoice.exe`，请保留整个解压文件夹。
+
+如果解压后只有 `.py` 等源码文件、找不到 `RainChoice.exe`，请检查是否下载了 GitHub 自动生成的 `Source code (zip)` / `Source code (tar.gz)` 或仓库里的 `Code → Download ZIP`。直接运行软件应下载上面带 **`Windows.zip`** 的附件。
+
+### 从源码运行
 
 从源码运行（Python 3.12）：
 

@@ -217,6 +217,12 @@ class ClientTests(unittest.TestCase):
 
 class IntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_classroom_events_through_submit(self):
+        await self.exercise_platform('standard')
+
+    async def test_changjiang_events_through_submit(self):
+        await self.exercise_platform('changjiang')
+
+    async def exercise_platform(self, platform):
         messages = [
             {"op":"hello", "presentation":789, "unlockedproblem":[888]},
             {"op":"unlockproblem", "problem":{"pres":789,"prob":456}},
@@ -233,7 +239,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0.1)
                 return json.dumps(messages.pop(0))
         events=[]
-        client = RainClient(lambda k,v:events.append((k,v)))
+        client = RainClient(lambda k,v:events.append((k,v)), platform)
         client.enter = Mock(return_value=("mock-lesson-token", 999))
         def request(method,path,lesson,**kw):
             if method == 'GET':
@@ -244,8 +250,9 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
         client.request = Mock(side_effect=request)
         stop=threading.Event()
         pipe=Pipeline({'mode':'auto'},lambda k,v:events.append((k,v)),stop)
-        with patch('core.connect',return_value=FakeSocket()), patch('core.solve',return_value=(['B'],'mock')):
+        with patch('core.connect',return_value=FakeSocket()) as connect, patch('core.solve',return_value=(['B'],'mock')):
             await client.watch_lesson(123,{'mode':'auto'},pipe,stop)
+        self.assertEqual(connect.call_args.args[0], client.ws_url)
         self.assertEqual(sum(c.args[0]=='POST' for c in client.request.call_args_list),1)
         rows=[v for k,v in events if k=='problem']
         self.assertEqual(rows[-1]['status'],'已提交')

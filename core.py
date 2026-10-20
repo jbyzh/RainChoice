@@ -12,16 +12,43 @@ import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import requests
 import websockets
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
 
-ORIGIN = "https://www.yuketang.cn"
-WS_URL = "wss://www.yuketang.cn/wsapp/"
+PLATFORMS = {
+    "standard": {"label": "普通雨课堂", "origin": "https://www.yuketang.cn"},
+    "changjiang": {"label": "长江雨课堂", "origin": "https://changjiang.yuketang.cn"},
+}
+DEFAULT_PLATFORM = "standard"
 DEFAULT_COURSE = ""
+
+
+def platform_info(platform):
+    if platform not in PLATFORMS:
+        raise ValueError("不支持的平台，请选择普通雨课堂或长江雨课堂")
+    return PLATFORMS[platform]
+
+
+def parse_course_input(value, platform=DEFAULT_PLATFORM):
+    """Accept an ID or a course URL, never an unrelated ID from the URL."""
+    info = platform_info(platform)
+    value = value.strip()
+    if re.fullmatch(r"[0-9]+", value):
+        return value
+    url = urlparse(value)
+    if (url.scheme != "https" or url.netloc != urlparse(info["origin"]).netloc):
+        raise ValueError("请输入数字课程编号，或当前所选平台的 HTTPS 课程链接")
+    ids = parse_qs(url.query, keep_blank_values=True).get("classroom_id", [])
+    match = re.fullmatch(r"/v2/web/studentLog/([0-9]+)/?", url.path)
+    if match:
+        ids.append(match[1])
+    if not ids or any(not re.fullmatch(r"[0-9]+", cid) for cid in ids) or len(set(ids)) != 1:
+        raise ValueError("链接中没有唯一课程编号；请打开具体课程，查找 classroom_id 或 studentLog/ 后的数字")
+    return ids[0]
 
 
 def clean(value):
@@ -203,10 +230,14 @@ class Pipeline:
 
 
 class RainClient:
-    def __init__(self, emit):
+    def __init__(self, emit, platform=DEFAULT_PLATFORM):
         self.emit = emit
+        self.platform = platform
+        info = platform_info(platform)
+        self.origin = info["origin"]
+        self.ws_url = "wss://" + urlparse(self.origin).netloc + "/wsapp/"
         self.session = requests.Session()
-        self.session.headers.update({"User-Agent": "Mozilla/5.0", "Referer": ORIGIN + "/v2/web/index"})
+        self.session.headers.update({"User-Agent": "Mozilla/5.0", "Referer": self.origin + "/v2/web/index"})
         self.logged_in = False
         self.name = ""
         self.auth = {}
@@ -214,11 +245,17 @@ class RainClient:
         self.closed = set()
         self.finished = set()
 
+    def history_path(self, root):
+        # Keep existing ordinary-platform history; other platforms use isolated files.
+        if self.platform == DEFAULT_PLATFORM:
+            return Path(root) / "data" / "history.jsonl"
+        return Path(root) / "data" / self.platform / "history.jsonl"
+
     def request(self, method, path, lesson=None, **kwargs):
         headers = {}
         if lesson and self.auth.get(str(lesson)):
             headers["Authorization"] = self.auth[str(lesson)]
-        r = self.session.request(method, ORIGIN + path, headers=headers,
+        r = self.session.request(method, self.origin + path, headers=headers,
                                  timeout=(8, 18), allow_redirects=False, **kwargs)
         if r.status_code in (301, 302, 401, 403):
             raise ValueError("登录失效或无权访问，请重新扫码")
@@ -233,7 +270,7 @@ class RainClient:
     async def login(self, stop):
         self.logged_in = False
         self.emit("status", "正在获取登录二维码…")
-        async with connect(WS_URL, open_timeout=12, close_timeout=3) as ws:
+        async with connect(self.ws_url, open_timeout=12, close_timeout=3) as ws:
             await ws.send(json.dumps({"op": "requestlogin", "role": "web", "version": 1.4,
                                       "type": "qrcode", "from": "web"}))
             data = json.loads(await asyncio.wait_for(ws.recv(), 15))
@@ -324,6 +361,8 @@ class RainClient:
         raise ValueError("题目内容尚未同步，已跳过；请在课堂页面查看")
 
     async def monitor(self, settings, emit, stop, history):
+        if settings.get("platform", self.platform) != self.platform:
+            raise ValueError("登录平台与课程平台不一致，请重新扫码登录")
         if not self.logged_in:
             raise ValueError("请先扫码登录")
         name, unique = await asyncio.to_thread(self.target_course, settings["course_id"])
@@ -375,7 +414,7 @@ class RainClient:
                 self.emit("log", str(exc) if isinstance(exc, ValueError) else "读取题目失败，请在课堂页面查看")
 
         try:
-            async with connect(WS_URL, open_timeout=12, close_timeout=3,
+            async with connect(self.ws_url, open_timeout=12, close_timeout=3,
                                           ping_interval=10, ping_timeout=30) as ws:
                 await ws.send(json.dumps({"op": "hello", "userid": userid, "role": "student",
                                           "auth": token, "lessonid": lesson}))

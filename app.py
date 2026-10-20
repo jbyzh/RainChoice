@@ -15,18 +15,30 @@ from tkinter import messagebox, ttk
 import qrcode
 from PIL import ImageTk
 
-from core import DEFAULT_COURSE, RainClient, api_endpoint, demo, solve, Problem
+from core import (DEFAULT_COURSE, DEFAULT_PLATFORM, PLATFORMS, RainClient,
+                  api_endpoint, demo, solve, Problem, parse_course_input)
 
 ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 CONFIG = ROOT / "settings.json"
 BG, WHITE, INK, MUTED, BLUE = "#f3f5f9", "#ffffff", "#18263c", "#6b7a90", "#2764e7"
 MODE_LABELS = {"只提醒": "remind", "AI 建议，手动提交": "suggest", "AI 自动答题并提交": "auto"}
+PLATFORM_LABELS = {info["label"]: key for key, info in PLATFORMS.items()}
+COURSE_HELP = (
+    "1. 在浏览器打开所选平台并登录，点击你要上的具体课程。\n\n"
+    "普通雨课堂：www.yuketang.cn\n长江雨课堂：changjiang.yuketang.cn\n\n"
+    "2. 查看浏览器地址栏：classroom_id= 后的数字，或 studentLog/ 后的数字，就是课程编号。\n\n"
+    "例如：\nhttps://changjiang.yuketang.cn/v2/web/studentLog/12345678?classroom_id=12345678\n"
+    "课程编号为 12345678（示例）。\n\n"
+    "3. 可以填写数字，也可以直接粘贴完整课程链接。链接的平台必须与上方选择一致。\n\n"
+    "不要填课堂暗号、课程名称、university_id、platform_id 或 lessonId。"
+    "若只看到课程列表，请先点击具体课程。"
+)
 
 
 class App:
     def __init__(self, root):
         self.root = root
-        root.title("雨课堂 · 选择题助手 v0.2")
+        root.title("雨课堂 · 选择题助手 v0.3")
         root.configure(bg=BG)
         width, height = min(1220, root.winfo_screenwidth()-80), min(880, root.winfo_screenheight()-100)
         root.geometry(f"{width}x{height}+40+40")
@@ -38,6 +50,7 @@ class App:
         self.client = RainClient(self.emit)
         self.stop_event = threading.Event()
         self.future = None
+        self.busy = False
         self.rows = {}
         self.qr_window = None
         self.is_demo = False
@@ -88,38 +101,47 @@ class App:
                  padx=16, pady=7, font=("Microsoft YaHei UI", 10)).pack(side="right")
         body = tk.Frame(self.root, bg=BG)
         body.pack(fill="both", expand=True, padx=26)
-        side = tk.Frame(body, bg=WHITE, padx=20, pady=18, width=335)
+        side = tk.Frame(body, bg=WHITE, padx=20, pady=14, width=335)
         side.pack(side="left", fill="y", padx=(0, 18))
         side.pack_propagate(False)
-        self.label(side, "课堂设置", 14, bold=True).pack(anchor="w")
-        self.label(side, "只处理单选、多选题", 10, MUTED).pack(anchor="w", pady=(3, 13))
-        self.label(side, "课程编号", 10, MUTED).pack(anchor="w")
+        self.label(side, "课堂设置 · 仅选择题", 14, bold=True).pack(anchor="w")
+        self.platform = tk.StringVar(value=PLATFORMS[DEFAULT_PLATFORM]["label"])
+        self.platform_box = ttk.Combobox(side, textvariable=self.platform,
+                                         values=list(PLATFORM_LABELS), state="readonly")
+        self.platform_box.pack(fill="x", pady=(4, 6)); self.controls.append(self.platform_box)
+        self.platform_box.bind("<<ComboboxSelected>>", self.change_platform)
+        course_label = tk.Frame(side, bg=WHITE); course_label.pack(fill="x")
+        self.label(course_label, "课程编号 / 链接", 10, MUTED).pack(side="left")
+        self.course_help_btn = tk.Button(course_label, text="在哪获取？", command=self.show_course_help,
+                                        bg=WHITE, fg=BLUE, relief="flat", bd=0, cursor="hand2",
+                                        font=("Microsoft YaHei UI", 9))
+        self.course_help_btn.pack(side="right")
         self.course = tk.StringVar(value=DEFAULT_COURSE)
         entry = ttk.Entry(side, textvariable=self.course)
         entry.pack(fill="x", pady=(4, 8)); self.controls.append(entry)
         self.label(side, textvariable=self.login_text, color=MUTED, size=10).pack(anchor="w")
         self.login_btn = self.button(side, "微信扫码登录", self.login)
-        self.login_btn.pack(fill="x", pady=(6, 14))
+        self.login_btn.pack(fill="x", pady=(4, 8))
         self.label(side, "运行方式", 10, MUTED).pack(anchor="w")
         self.mode = tk.StringVar(value="只提醒")
         self.mode_box = ttk.Combobox(side, textvariable=self.mode, values=list(MODE_LABELS), state="readonly")
         self.mode_box.pack(fill="x", pady=(4, 8)); self.controls.append(self.mode_box)
         self.label(side, "开始监看会进入目标课堂，并可能登记签到。", 9, MUTED,
-                   wraplength=285, justify="left").pack(anchor="w", pady=(0, 12))
+                   wraplength=285, justify="left").pack(anchor="w", pady=(0, 8))
         self.label(side, "AI 配置", 13, bold=True).pack(anchor="w")
-        self.label(side, "稍后填写也可以；演示和提醒无需 Key。", 9, MUTED).pack(anchor="w", pady=(2, 8))
+        self.label(side, "稍后填写也可以；演示和提醒无需 Key。", 9, MUTED).pack(anchor="w", pady=(2, 5))
         self.base = tk.StringVar()
         self.model = tk.StringVar()
         self.key = tk.StringVar()
         for caption, var, show in [("API 基础地址", self.base, ""), ("模型名称", self.model, ""), ("API Key", self.key, "•")]:
             self.label(side, caption, 9, MUTED).pack(anchor="w")
             e = ttk.Entry(side, textvariable=var, show=show)
-            e.pack(fill="x", pady=(3, 6)); self.controls.append(e)
+            e.pack(fill="x", pady=(3, 4)); self.controls.append(e)
         self.vision = tk.BooleanVar(value=False)
         self.vision_check = tk.Checkbutton(side, text="发送题目图片（需视觉模型）", variable=self.vision,
                                          bg=WHITE, activebackground=WHITE, fg=INK, font=("Microsoft YaHei UI", 9))
         self.vision_check.pack(anchor="w"); self.controls.append(self.vision_check)
-        self.label(side, "Key 和登录状态仅保留到关闭程序。", 9, MUTED).pack(anchor="w", pady=(2, 7))
+        self.label(side, "Key 和登录状态仅保留到关闭程序。", 9, MUTED).pack(anchor="w", pady=(2, 4))
         config_buttons = tk.Frame(side, bg=WHITE); config_buttons.pack(fill="x")
         self.save_btn = self.button(config_buttons, "保存配置", self.save_config)
         self.save_btn.pack(side="left", expand=True, fill="x", padx=(0, 6))
@@ -179,13 +201,12 @@ class App:
         self.footer_label.pack(fill="x")
 
     def settings(self, require_ai=False):
-        course = self.course.get().strip()
-        if not course.isdigit():
-            raise ValueError("课程编号应只包含数字")
+        platform = PLATFORM_LABELS[self.platform.get()]
+        course = parse_course_input(self.course.get(), platform)
         delay = self.delay_value()
         data = {"course_id": course, "mode": MODE_LABELS[self.mode.get()], "base_url": self.base.get().strip(),
                 "model": self.model.get().strip(), "api_key": self.key.get().strip(), "vision": self.vision.get(),
-                "submit_delay": delay}
+                "submit_delay": delay, "platform": platform}
         if require_ai:
             api_endpoint(data["base_url"])
             if not data["api_key"] or not data["model"]:
@@ -215,14 +236,44 @@ class App:
         if CONFIG.exists():
             try:
                 d = json.loads(CONFIG.read_text(encoding="utf-8"))
+                platform = d.get("platform", DEFAULT_PLATFORM)
+                client = RainClient(self.emit, platform)
+                self.client.session.close()
+                self.client = client
+                self.platform.set(PLATFORMS[platform]["label"])
+                self.login_text.set("未登录" + self.platform.get())
                 self.course.set(d.get("course_id", DEFAULT_COURSE))
                 self.base.set(d.get("base_url", "")); self.model.set(d.get("model", ""))
                 self.vision.set(bool(d.get("vision", False)))
                 self.delay.set(str(d.get("submit_delay", 5)))
-            except (ValueError, OSError):
+            except (ValueError, OSError, TypeError, AttributeError):
                 self.status.set("配置读取失败，已使用默认设置")
 
+    def change_platform(self, event=None):
+        if self.busy:
+            self.platform.set(PLATFORMS[self.client.platform]["label"])
+            return
+        platform = PLATFORM_LABELS[self.platform.get()]
+        if platform == self.client.platform:
+            return
+        self.client.session.close()
+        self.client = RainClient(self.emit, platform)
+        self.course.set("")
+        self.mode.set("只提醒")
+        self.is_demo = False
+        self.clear_rows()
+        self.course_text.set(self.platform.get() + " / 请填写课程编号或链接")
+        self.login_text.set("未登录" + self.platform.get())
+        self.badge.set("待登录")
+        self.status.set("已切换到" + self.platform.get() + "，请重新扫码登录并填写该平台的课程编号")
+        if platform == "changjiang":
+            self.status.set(self.status.get() + "；真实课堂兼容性待验证")
+
+    def show_course_help(self):
+        messagebox.showinfo("课程编号在哪获取", COURSE_HELP, parent=self.root)
+
     def set_busy(self, busy):
+        self.busy = busy
         state = "disabled" if busy else "normal"
         for b in (self.start_btn, self.demo_btn, self.login_btn, self.test_btn, self.save_btn):
             b.config(state=state)
@@ -230,6 +281,7 @@ class App:
             c.config(state=state)
         if not busy:
             self.mode_box.config(state="readonly")
+            self.platform_box.config(state="readonly")
         self.stop_btn.config(state="normal" if busy else "disabled")
 
     def dispatch(self, coroutine, kind):
@@ -262,10 +314,11 @@ class App:
         except ValueError as e:
             messagebox.showinfo("还差一步", str(e), parent=self.root); return
         self.is_demo = False
+        self.course.set(settings["course_id"])
         self.clear_rows()
         self.stop_event = threading.Event()
         self.badge.set("监看中")
-        self.dispatch(self.client.monitor(settings, self.emit, self.stop_event, ROOT / "data" / "history.jsonl"), "monitor")
+        self.dispatch(self.client.monitor(settings, self.emit, self.stop_event, self.client.history_path(ROOT)), "monitor")
 
     def start_demo(self):
         try:
@@ -330,7 +383,7 @@ class App:
         if self.qr_window and self.qr_window.winfo_exists():
             self.qr_window.destroy()
         self.qr_window = tk.Toplevel(self.root)
-        self.qr_window.title("微信扫码登录雨课堂")
+        self.qr_window.title("微信扫码登录 · " + self.platform.get())
         self.qr_window.configure(bg=WHITE)
         self.qr_window.transient(self.root)
         self.qr_window.protocol("WM_DELETE_WINDOW", self.stop)
@@ -355,7 +408,7 @@ class App:
             elif kind == "qr":
                 self.show_qr(value)
             elif kind == "login":
-                self.login_text.set("已登录雨课堂")
+                self.login_text.set("已登录" + self.platform.get())
                 self.badge.set("已登录")
                 if self.qr_window and self.qr_window.winfo_exists():
                     self.qr_window.destroy()
